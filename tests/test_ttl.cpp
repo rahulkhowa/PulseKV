@@ -7,14 +7,23 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace {
+
+#define TEST_CHECK(expr)                                                      \
+    do {                                                                      \
+        if (!(expr)) {                                                        \
+            std::cerr << "\n[FAIL] Assertion failed: " #expr " at line "      \
+                      << __LINE__ << std::endl;                               \
+            std::exit(1);                                                     \
+        }                                                                     \
+    } while (false)
 
 struct WinsockGuard {
     bool ok = false;
@@ -25,20 +34,29 @@ struct WinsockGuard {
     ~WinsockGuard() { if (ok) WSACleanup(); }
 };
 
-SOCKET connect_client(std::uint16_t port) {
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) return INVALID_SOCKET;
+SOCKET connect_client(std::uint16_t port, int retries = 20) {
+    for (int r = 0; r < retries; ++r) {
+        SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s == INVALID_SOCKET) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        int nodelay = 1;
+        setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
-    if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+        if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR) {
+            return s;
+        }
         closesocket(s);
-        return INVALID_SOCKET;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    return s;
+    return INVALID_SOCKET;
 }
 
 bool send_line(SOCKET s, const std::string& line) {
@@ -70,32 +88,32 @@ void test_ttl_immediate_get() {
     pulsekv::Store s;
     s.set("session", "token123", 5);
     auto val = s.get("session");
-    assert(val.has_value() && val.value() == "token123");
-    assert(s.exists("session"));
+    TEST_CHECK(val.has_value() && val.value() == "token123");
+    TEST_CHECK(s.exists("session"));
 }
 
 void test_ttl_expiration_after_wait() {
     pulsekv::Store s;
-    // Set 100ms TTL via set_with_expiry
+    // Set 80ms TTL via set_with_expiry
     s.set_with_expiry("short_lived", "data",
                       std::chrono::steady_clock::now() + std::chrono::milliseconds(80));
 
-    assert(s.get("short_lived") == "data");
+    TEST_CHECK(s.get("short_lived") == "data");
 
     // Wait past expiration
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
 
     // Lazy expiration on get
-    assert(s.get("short_lived") == std::nullopt);
-    assert(!s.exists("short_lived"));
+    TEST_CHECK(s.get("short_lived") == std::nullopt);
+    TEST_CHECK(!s.exists("short_lived"));
 }
 
 void test_ttl_persistent_does_not_expire() {
     pulsekv::Store s;
     s.set("permanent", "value", 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    assert(s.get("permanent") == "value");
-    assert(s.exists("permanent"));
+    TEST_CHECK(s.get("permanent") == "value");
+    TEST_CHECK(s.exists("permanent"));
 }
 
 void test_ttl_overwrite_removes_or_updates_expiry() {
@@ -107,13 +125,13 @@ void test_ttl_overwrite_removes_or_updates_expiry() {
     // Overwrite without TTL -> should become persistent
     s.set("key", "val2", 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
-    assert(s.get("key") == "val2");
+    TEST_CHECK(s.get("key") == "val2");
 
     // Overwrite again with new TTL
     s.set_with_expiry("key", "val3",
                       std::chrono::steady_clock::now() + std::chrono::milliseconds(80));
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
-    assert(s.get("key") == std::nullopt);
+    TEST_CHECK(s.get("key") == std::nullopt);
 }
 
 void test_active_background_purge() {
@@ -129,8 +147,8 @@ void test_active_background_purge() {
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
     // Without calling get on any exp_ keys, size() should reflect background purges
-    assert(s.size() == 1);
-    assert(s.exists("persistent"));
+    TEST_CHECK(s.size() == 1);
+    TEST_CHECK(s.exists("persistent"));
 }
 
 void test_ttl_tcp_integration() {
@@ -140,32 +158,27 @@ void test_ttl_tcp_integration() {
 
     std::thread server_th([&server]() { server.run(); });
 
-    SOCKET client = INVALID_SOCKET;
-    for (int retry = 0; retry < 50; ++retry) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        client = connect_client(PORT);
-        if (client != INVALID_SOCKET) break;
-    }
-    assert(client != INVALID_SOCKET);
+    SOCKET client = connect_client(PORT, 50);
+    TEST_CHECK(client != INVALID_SOCKET);
 
     // Send SET key value EX 1
-    assert(send_line(client, "SET token xyz123 EX 1"));
-    assert(recv_line(client) == "+OK");
+    TEST_CHECK(send_line(client, "SET token xyz123 EX 1"));
+    TEST_CHECK(recv_line(client) == "+OK");
 
     // Immediate GET
-    assert(send_line(client, "GET token"));
-    assert(recv_line(client) == "+xyz123");
+    TEST_CHECK(send_line(client, "GET token"));
+    TEST_CHECK(recv_line(client) == "+xyz123");
 
     // Wait 1.1s for expiration
     std::this_thread::sleep_for(std::chrono::milliseconds(1150));
 
     // GET after expiration
-    assert(send_line(client, "GET token"));
-    assert(recv_line(client) == "$-1");
+    TEST_CHECK(send_line(client, "GET token"));
+    TEST_CHECK(recv_line(client) == "$-1");
 
     // EXISTS after expiration
-    assert(send_line(client, "EXISTS token"));
-    assert(recv_line(client) == ":0");
+    TEST_CHECK(send_line(client, "EXISTS token"));
+    TEST_CHECK(recv_line(client) == ":0");
 
     closesocket(client);
     server.request_stop();
@@ -181,9 +194,9 @@ int main() {
 
     int passed = 0;
     auto run = [&](const std::string& name, auto fn) {
-        std::cout << "  [TEST] " << name << "... ";
+        std::cout << "  [TEST] " << name << "... " << std::flush;
         fn();
-        std::cout << "PASSED\n";
+        std::cout << "PASSED\n" << std::flush;
         ++passed;
     };
 

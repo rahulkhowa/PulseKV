@@ -129,6 +129,10 @@ int Server::run() {
             continue;
         }
 
+        int nodelay = 1;
+        setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY,
+                   reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
         // Format peer address for logging.
         char peer_buf[INET_ADDRSTRLEN]{};
         inet_ntop(AF_INET, &client_addr.sin_addr, peer_buf, sizeof(peer_buf));
@@ -320,10 +324,16 @@ bool Server::send_all(SOCKET sock, const std::string& buf) {
 
 void Server::request_stop() {
     stop_flag_ = true;
+    if (listen_fd_ != INVALID_SOCKET) {
+        SOCKET lfd = listen_fd_;
+        listen_fd_ = INVALID_SOCKET;
+        closesocket(lfd);
+    }
     {
         std::lock_guard<std::mutex> lock(sockets_mutex_);
         for (SOCKET s : active_sockets_) {
             shutdown(s, SD_BOTH);
+            closesocket(s);
         }
     }
     thread_pool_.shutdown();

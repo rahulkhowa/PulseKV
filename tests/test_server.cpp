@@ -7,11 +7,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -26,20 +27,29 @@ struct WinsockInit {
     }
 };
 
-SOCKET connect_client(std::uint16_t port) {
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) return INVALID_SOCKET;
+SOCKET connect_client(std::uint16_t port, int retries = 20) {
+    for (int r = 0; r < retries; ++r) {
+        SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s == INVALID_SOCKET) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        int nodelay = 1;
+        setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
-    if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+        if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR) {
+            return s;
+        }
         closesocket(s);
-        return INVALID_SOCKET;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    return s;
+    return INVALID_SOCKET;
 }
 
 bool send_line(SOCKET s, const std::string& line) {
@@ -67,18 +77,27 @@ std::string recv_line(SOCKET s) {
     return out;
 }
 
+#define TEST_CHECK(expr)                                                      \
+    do {                                                                      \
+        if (!(expr)) {                                                        \
+            std::cerr << "\n[FAIL] Assertion failed: " #expr " at line "      \
+                      << __LINE__ << std::endl;                               \
+            std::exit(1);                                                     \
+        }                                                                     \
+    } while (false)
+
 } // namespace
 
 int main() {
     WinsockInit ws;
-    assert(ws.ok && "WSAStartup must succeed");
+    TEST_CHECK(ws.ok && "WSAStartup must succeed");
 
     std::cout << "PulseKV — Phase 3 & 4 Server/Client Integration Tests\n";
     std::cout << "====================================================\n\n";
 
     constexpr std::uint16_t TEST_PORT = 17379;
     pulsekv::Store store;
-    pulsekv::Server server(TEST_PORT, store);
+    pulsekv::Server server(TEST_PORT, store, 16);
 
     // Run server on a background thread
     std::thread server_thread([&server]() {
@@ -86,96 +105,91 @@ int main() {
     });
 
     // Wait for server to begin listening
-    SOCKET client = INVALID_SOCKET;
-    for (int retry = 0; retry < 50; ++retry) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        client = connect_client(TEST_PORT);
-        if (client != INVALID_SOCKET) break;
-    }
-    assert(client != INVALID_SOCKET && "Failed to connect to server");
+    SOCKET client = connect_client(TEST_PORT, 50);
+    TEST_CHECK(client != INVALID_SOCKET && "Failed to connect to server");
 
     int passed = 0;
 
     auto test = [&](const std::string& desc, auto fn) {
-        std::cout << "  [TEST] " << desc << "... ";
+        std::cout << "  [TEST] " << desc << "... " << std::flush;
         fn();
-        std::cout << "PASSED\n";
+        std::cout << "PASSED\n" << std::flush;
         ++passed;
     };
 
     // 1. PING
     test("PING command", [&]() {
-        assert(send_line(client, "PING"));
-        assert(recv_line(client) == "+PONG");
+        TEST_CHECK(send_line(client, "PING"));
+        TEST_CHECK(recv_line(client) == "+PONG");
     });
 
     // 2. SET and GET
     test("SET and GET", [&]() {
-        assert(send_line(client, "SET name Rahul"));
-        assert(recv_line(client) == "+OK");
+        TEST_CHECK(send_line(client, "SET name Rahul"));
+        TEST_CHECK(recv_line(client) == "+OK");
 
-        assert(send_line(client, "GET name"));
-        assert(recv_line(client) == "+Rahul");
+        TEST_CHECK(send_line(client, "GET name"));
+        TEST_CHECK(recv_line(client) == "+Rahul");
     });
 
     // 3. EXISTS
     test("EXISTS for existing key", [&]() {
-        assert(send_line(client, "EXISTS name"));
-        assert(recv_line(client) == ":1");
+        TEST_CHECK(send_line(client, "EXISTS name"));
+        TEST_CHECK(recv_line(client) == ":1");
     });
 
     // 4. DEL
     test("DEL removes existing key", [&]() {
-        assert(send_line(client, "DEL name"));
-        assert(recv_line(client) == ":1");
+        TEST_CHECK(send_line(client, "DEL name"));
+        TEST_CHECK(recv_line(client) == ":1");
     });
 
     // 5. GET after DEL
     test("GET returns null bulk for deleted key", [&]() {
-        assert(send_line(client, "GET name"));
-        assert(recv_line(client) == "$-1");
+        TEST_CHECK(send_line(client, "GET name"));
+        TEST_CHECK(recv_line(client) == "$-1");
     });
 
     // 6. EXISTS after DEL
     test("EXISTS returns 0 for deleted key", [&]() {
-        assert(send_line(client, "EXISTS name"));
-        assert(recv_line(client) == ":0");
+        TEST_CHECK(send_line(client, "EXISTS name"));
+        TEST_CHECK(recv_line(client) == ":0");
     });
 
     // 7. DEL non-existent key
     test("DEL returns 0 for non-existent key", [&]() {
-        assert(send_line(client, "DEL non_existent_key"));
-        assert(recv_line(client) == ":0");
+        TEST_CHECK(send_line(client, "DEL non_existent_key"));
+        TEST_CHECK(recv_line(client) == ":0");
     });
 
     // 8. Unknown command
     test("Unknown command error response", [&]() {
-        assert(send_line(client, "UNKNOWN cmd"));
+        TEST_CHECK(send_line(client, "UNKNOWN cmd"));
         std::string res = recv_line(client);
-        assert(res.rfind("-ERR unknown command", 0) == 0);
+        TEST_CHECK(res.starts_with("-ERR unknown command"));
     });
 
     // 9. Wrong argument count
     test("Wrong argument count error response", [&]() {
-        assert(send_line(client, "SET onlykey"));
+        TEST_CHECK(send_line(client, "SET onlykey"));
         std::string res = recv_line(client);
-        assert(res.rfind("-ERR wrong number of arguments", 0) == 0);
+        TEST_CHECK(res.starts_with("-ERR wrong number of arguments"));
     });
 
     // 10. Blank line (should be ignored silently without dropping connection)
     test("Blank line handling", [&]() {
-        assert(send_line(client, ""));
-        assert(send_line(client, "PING"));
-        assert(recv_line(client) == "+PONG");
+        TEST_CHECK(send_line(client, ""));
+        TEST_CHECK(send_line(client, "PING"));
+        TEST_CHECK(recv_line(client) == "+PONG");
     });
 
     // 11. Pipelining multiple commands
     test("Command pipelining in single TCP send", [&]() {
         std::string batch = "SET color blue\r\nGET color\r\n";
         int sent = send(client, batch.data(), static_cast<int>(batch.size()), 0);
-        assert(sent == static_cast<int>(batch.size()));
-        assert(recv_line(client) == "+OK");
-        assert(recv_line(client) == "+blue");
+        TEST_CHECK(sent == static_cast<int>(batch.size()));
+        TEST_CHECK(recv_line(client) == "+OK");
+        TEST_CHECK(recv_line(client) == "+blue");
     });
 
     // 12. Multiple sequential clients against same store
@@ -184,10 +198,10 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
         SOCKET client2 = connect_client(TEST_PORT);
-        assert(client2 != INVALID_SOCKET);
+        TEST_CHECK(client2 != INVALID_SOCKET);
 
-        assert(send_line(client2, "GET color"));
-        assert(recv_line(client2) == "+blue");
+        TEST_CHECK(send_line(client2, "GET color"));
+        TEST_CHECK(recv_line(client2) == "+blue");
 
         closesocket(client2);
     });
@@ -201,22 +215,28 @@ int main() {
 
         for (int i = 0; i < NUM_CLIENTS; ++i) {
             workers.emplace_back([i, &success_count]() {
-                SOCKET s = connect_client(TEST_PORT);
-                if (s == INVALID_SOCKET) return;
+                SOCKET s = connect_client(TEST_PORT, 20);
+                if (s == INVALID_SOCKET) {
+                    std::cerr << "[worker " << i << " failed to connect]\n";
+                    return;
+                }
 
                 std::string key = "concurrent_key_" + std::to_string(i);
                 std::string val = "val_" + std::to_string(i);
 
+                bool all_ok = true;
                 for (int op = 0; op < OPS_PER_CLIENT; ++op) {
-                    if (!send_line(s, "SET " + key + " " + val)) break;
-                    if (recv_line(s) != "+OK") break;
+                    if (!send_line(s, "SET " + key + " " + val)) { all_ok = false; break; }
+                    if (recv_line(s) != "+OK") { all_ok = false; break; }
 
-                    if (!send_line(s, "GET " + key)) break;
-                    if (recv_line(s) != "+" + val) break;
+                    if (!send_line(s, "GET " + key)) { all_ok = false; break; }
+                    if (recv_line(s) != "+" + val) { all_ok = false; break; }
                 }
 
                 closesocket(s);
-                success_count.fetch_add(1);
+                if (all_ok) {
+                    success_count.fetch_add(1);
+                }
             });
         }
 
@@ -224,7 +244,7 @@ int main() {
             if (w.joinable()) w.join();
         }
 
-        assert(success_count == NUM_CLIENTS);
+        TEST_CHECK(success_count == NUM_CLIENTS);
     });
 
     // 14. Graceful shutdown
@@ -233,7 +253,7 @@ int main() {
         if (server_thread.joinable()) {
             server_thread.join();
         }
-        assert(!server.is_running());
+        TEST_CHECK(!server.is_running());
     });
 
     std::cout << "\nResults: " << passed << " / " << passed << " passed\n";

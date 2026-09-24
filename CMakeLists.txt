@@ -179,6 +179,15 @@ target_link_libraries(test_recovery PRIVATE
 )
 add_test(NAME RecoveryTests COMMAND test_recovery)
 
+add_executable(test_ttl
+    tests/test_ttl.cpp
+)
+target_link_libraries(test_ttl PRIVATE
+    pulsekv_server
+    ws2_32
+)
+add_test(NAME TTLTests COMMAND test_ttl)
+
 # ---------------------------------------------------------------------------
 # Benchmark executable (Phase 5, 9, 14)
 # ---------------------------------------------------------------------------

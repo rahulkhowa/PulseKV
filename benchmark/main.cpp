@@ -385,20 +385,20 @@ int main(int argc, char* argv[]) {
 
     std::size_t total_completed = all_latencies.size();
     std::size_t total_scheduled = cfg.clients * cfg.requests;
-    double throughput = (total_seconds > 0) ? (total_completed / total_seconds) : 0.0;
+    double throughput = (total_seconds > 0) ? (static_cast<double>(total_completed) / total_seconds) : 0.0;
 
     std::sort(all_latencies.begin(), all_latencies.end());
 
     auto percentile = [&](double p) -> double {
         if (all_latencies.empty()) return 0.0;
-        std::size_t idx = static_cast<std::size_t>(p / 100.0 * (all_latencies.size() - 1));
+        std::size_t idx = static_cast<std::size_t>(p / 100.0 * static_cast<double>(all_latencies.size() - 1));
         return all_latencies[idx];
     };
 
     double min_lat = all_latencies.empty() ? 0.0 : all_latencies.front();
     double max_lat = all_latencies.empty() ? 0.0 : all_latencies.back();
     double sum_lat = std::accumulate(all_latencies.begin(), all_latencies.end(), 0.0);
-    double avg_lat = all_latencies.empty() ? 0.0 : (sum_lat / all_latencies.size());
+    double avg_lat = all_latencies.empty() ? 0.0 : (sum_lat / static_cast<double>(all_latencies.size()));
 
     double p50  = percentile(50.0);
     double p95  = percentile(95.0);
@@ -415,8 +415,8 @@ int main(int argc, char* argv[]) {
                   << "  \"errors\": " << total_errors << ",\n"
                   << "  \"duration_sec\": " << total_seconds << ",\n"
                   << "  \"throughput_qps\": " << throughput << ",\n"
-                  << "  \"memory_mb_start\": " << (mem_before / (1024.0 * 1024.0)) << ",\n"
-                  << "  \"memory_mb_end\": " << (mem_after / (1024.0 * 1024.0)) << ",\n"
+                  << "  \"memory_mb_start\": " << (static_cast<double>(mem_before) / (1024.0 * 1024.0)) << ",\n"
+                  << "  \"memory_mb_end\": " << (static_cast<double>(mem_after) / (1024.0 * 1024.0)) << ",\n"
                   << "  \"latency_us\": {\n"
                   << "    \"avg\": " << avg_lat << ",\n"
                   << "    \"min\": " << min_lat << ",\n"
@@ -444,8 +444,8 @@ int main(int argc, char* argv[]) {
         std::cout << "max:   " << (max_lat / 1000.0) << " ms  (" << (max_lat) << " us)\n\n";
         std::cout << "Memory:\n";
         std::cout << std::fixed << std::setprecision(2);
-        std::cout << "Start: " << (mem_before / (1024.0 * 1024.0)) << " MB\n";
-        std::cout << "End:   " << (mem_after / (1024.0 * 1024.0)) << " MB\n\n";
+        std::cout << "Start: " << (static_cast<double>(mem_before) / (1024.0 * 1024.0)) << " MB\n";
+        std::cout << "End:   " << (static_cast<double>(mem_after) / (1024.0 * 1024.0)) << " MB\n\n";
         std::cout << "Errors:\n" << total_errors << "\n";
         std::cout << "=================\n";
     }
