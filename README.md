@@ -128,19 +128,8 @@ PulseKV includes a high-throughput benchmarking tool designed to measure latency
 - `--workload mixed80`: 80% GET / 20% SET
 - `--workload mixed50`: 50% GET / 50% SET
 
-### Sample Benchmark Results
-Full methodology, hardware context, and empirical comparison tables are documented in [BENCHMARKS.md](BENCHMARKS.md), [BOTTLENECK_ANALYSIS.md](BOTTLENECK_ANALYSIS.md), and [EXTERNAL_COMPARISON.md](EXTERNAL_COMPARISON.md).
-
----
-
-## Project Documentation
-- [Implementation Plan & Status](Implementation.md)
-- [System Benchmarks & Results](BENCHMARKS.md)
-- [Bottleneck & Profiling Analysis](BOTTLENECK_ANALYSIS.md)
-- [Durability & WAL Guarantees](DURABILITY.md)
-- [External Comparison vs Memcached](EXTERNAL_COMPARISON.md)
-- [Sanitizers & Quality Verification](SANITIZERS.md)
-- [Interview & Architecture Guide](INTERVIEW_GUIDE.md)
+### Benchmark Metrics
+The benchmark suite records throughput (QPS), latency percentiles (`p50`, `p95`, `p99`, `p99.9`, `max`), memory footprint, and CPU utilization across varied client counts and workloads.
 
 ---
 
